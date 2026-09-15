@@ -22,6 +22,8 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -215,10 +217,8 @@ function App() {
   };
 
   // ファイル読み込み（.phz/.phn）
-  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
+  // ファイル読み込み処理（共通）
+  const importFile = async (file: File) => {
     try {
       let scene;
       const extension = file.name.toLowerCase().split('.').pop();
@@ -236,6 +236,8 @@ function App() {
       const bodies = sceneToPhysicsBodies(scene);
       bodies.forEach(body => physics.addBody(body));
 
+      setLoadedFileName(file.name);
+
       // P2Pで同期
       if (peer.isConnected) {
         const msg: SyncMessage = {
@@ -251,7 +253,7 @@ function App() {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `ファイルを読み込みました: ${file.name}（${bodies.length}個のオブジェクト）`,
+        text: `📂 読み込み: ${file.name}（${bodies.length}個のオブジェクト）`,
         timestamp: Date.now(),
       }]);
     } catch (error) {
@@ -260,27 +262,79 @@ function App() {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `エラー: ${error instanceof Error ? error.message : 'ファイルの読み込みに失敗しました'}`,
+        text: `❌ エラー: ${error instanceof Error ? error.message : 'ファイルの読み込みに失敗しました'}`,
         timestamp: Date.now(),
       }]);
     }
+  };
+
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    await importFile(file);
 
     // ファイル入力をリセット
     event.target.value = '';
   };
 
+  // ドラッグ&ドロップハンドラー
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      const extension = file.name.toLowerCase().split('.').pop();
+      if (extension === 'phz' || extension === 'phn') {
+        await importFile(file);
+      } else {
+        setChatMessages(prev => [...prev, {
+          id: Date.now().toString() + Math.random(),
+          senderId: 'system',
+          senderName: 'システム',
+          text: '❌ .phzまたは.phnファイルのみ対応しています',
+          timestamp: Date.now(),
+        }]);
+      }
+    }
+  };
+
   // ファイル保存（.phz）
+  // ファイル名を生成（読み込んだファイル名をベースにする）
+  const generateExportFilename = (extension: string): string => {
+    if (loadedFileName) {
+      const baseName = loadedFileName.replace(/\.(phz|phn)$/i, '');
+      return `${baseName}.${extension}`;
+    }
+    return `scene_${Date.now()}.${extension}`;
+  };
+
   const handleExportPhz = async () => {
     try {
       const bodies = physics.getAllBodies();
       const scene = physicsBodiesToScene(bodies);
-      await savePhz(scene, `scene_${Date.now()}.phz`);
+      const filename = generateExportFilename('phz');
+      await savePhz(scene, filename);
 
       setChatMessages(prev => [...prev, {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `.phzファイルを保存しました（${bodies.length}個のオブジェクト）`,
+        text: `💾 保存: ${filename}（${bodies.length}個のオブジェクト）`,
         timestamp: Date.now(),
       }]);
     } catch (error) {
@@ -289,7 +343,7 @@ function App() {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `エラー: ファイルの保存に失敗しました`,
+        text: `❌ エラー: ファイルの保存に失敗しました`,
         timestamp: Date.now(),
       }]);
     }
@@ -300,13 +354,14 @@ function App() {
     try {
       const bodies = physics.getAllBodies();
       const scene = physicsBodiesToScene(bodies);
-      await savePhn(scene, `scene_${Date.now()}.phn`);
+      const filename = generateExportFilename('phn');
+      await savePhn(scene, filename);
 
       setChatMessages(prev => [...prev, {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `.phnファイルを保存しました（${bodies.length}個のオブジェクト）`,
+        text: `💾 保存: ${filename}（${bodies.length}個のオブジェクト）`,
         timestamp: Date.now(),
       }]);
     } catch (error) {
@@ -315,7 +370,7 @@ function App() {
         id: Date.now().toString() + Math.random(),
         senderId: 'system',
         senderName: 'システム',
-        text: `エラー: ファイルの保存に失敗しました`,
+        text: `❌ エラー: ファイルの保存に失敗しました`,
         timestamp: Date.now(),
       }]);
     }
@@ -581,11 +636,27 @@ function App() {
         </div>
 
         {/* キャンバス */}
-        <div className="flex-1 relative bg-slate-900">
+        <div 
+          className="flex-1 relative bg-slate-900"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <canvas
             ref={canvasRef}
             className="w-full h-full block cursor-crosshair"
           />
+          
+          {/* ドラッグ&ドロップオーバーレイ */}
+          {isDragging && (
+            <div className="absolute inset-0 bg-purple-900/80 backdrop-blur-sm flex items-center justify-center z-50 border-4 border-dashed border-purple-400 rounded-lg">
+              <div className="text-center">
+                <div className="text-6xl mb-4">📂</div>
+                <div className="text-xl font-bold text-white">Algodooシーンをドロップ</div>
+                <div className="text-sm text-purple-200 mt-2">.phz または .phn ファイル</div>
+              </div>
+            </div>
+          )}
           
           {/* 操作ヒント */}
           <div className="absolute bottom-3 left-3 bg-slate-800/90 backdrop-blur rounded-lg px-3 py-1.5 text-xs text-slate-400 border border-slate-700/50">
@@ -594,6 +665,14 @@ function App() {
             {physics.selectedTool === 'select' && '✋ オブジェクトを掴んで移動'}
             {physics.selectedTool === 'eraser' && '🗑️ クリックでオブジェクトを削除'}
           </div>
+
+          {/* 読み込みファイル名表示 */}
+          {loadedFileName && (
+            <div className="absolute top-3 right-3 bg-slate-800/90 backdrop-blur rounded-lg px-3 py-1.5 text-xs text-slate-300 border border-slate-700/50 flex items-center gap-2">
+              <span>📄</span>
+              <span className="max-w-[200px] truncate">{loadedFileName}</span>
+            </div>
+          )}
 
           {/* 接続状態表示 */}
           {!peer.isConnected && (
