@@ -1,17 +1,257 @@
+// phun-js-box2dのパーサーをベースにしたAlgodooファイルパーサー
+// 参考: https://github.com/EJTH/phun-js-box2d
+
 import JSZip from 'jszip';
-import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { PhysicsBody } from '../types';
 
-// Algodooの.phnファイル形式（XML）
-interface AlgodooScene {
+// Thymeパーサー（phun-js-box2dから移植）
+// このパーサーはAlgodooの.phnファイル形式（Thymeスクリプト）を解析します
+
+interface ThymeNode {
+  type: 'call' | 'struct';
+  name: string;
+  arguments?: any;
+  properties?: any;
+}
+
+// 簡易Thymeパーサー
+class ThymeParser {
+  private input: string;
+  private pos: number;
+
+  constructor(input: string) {
+    this.input = input;
+    this.pos = 0;
+  }
+
+  parse(): ThymeNode[] {
+    const nodes: ThymeNode[] = [];
+    
+    while (this.pos < this.input.length) {
+      this.skipWhitespace();
+      if (this.pos >= this.input.length) break;
+      
+      const node = this.parseNode();
+      if (node) {
+        nodes.push(node);
+      }
+      
+      this.skipWhitespace();
+      if (this.peek() === ';') {
+        this.pos++;
+      }
+    }
+    
+    return nodes;
+  }
+
+  private parseNode(): ThymeNode | null {
+    this.skipWhitespace();
+    
+    // 関数呼び出し: Scene.addBox({...})
+    const name = this.parseIdentifier();
+    if (!name) return null;
+    
+    this.skipWhitespace();
+    
+    // -> で始まる場合は構造体
+    if (this.input.substr(this.pos, 2) === '->') {
+      this.pos += 2;
+      this.skipWhitespace();
+      const properties = this.parseObject();
+      return { type: 'struct', name, properties };
+    }
+    
+    // ( で始まる場合は関数呼び出し
+    if (this.peek() === '(') {
+      this.pos++;
+      this.skipWhitespace();
+      const args = this.parseArguments();
+      this.skipWhitespace();
+      if (this.peek() === ')') this.pos++;
+      return { type: 'call', name, arguments: args };
+    }
+    
+    return null;
+  }
+
+  private parseIdentifier(): string {
+    const start = this.pos;
+    while (this.pos < this.input.length) {
+      const ch = this.input[this.pos];
+      if (/[a-zA-Z0-9_.]/.test(ch)) {
+        this.pos++;
+      } else {
+        break;
+      }
+    }
+    return this.input.substring(start, this.pos);
+  }
+
+  private parseObject(): any {
+    if (this.peek() !== '{') return null;
+    this.pos++;
+    this.skipWhitespace();
+    
+    const obj: any = {};
+    
+    while (this.pos < this.input.length && this.peek() !== '}') {
+      this.skipWhitespace();
+      if (this.peek() === '}') break;
+      
+      const key = this.parseIdentifier();
+      if (!key) break;
+      
+      this.skipWhitespace();
+      
+      // = または :=
+      if (this.input.substr(this.pos, 2) === ':=') {
+        this.pos += 2;
+      } else if (this.peek() === '=') {
+        this.pos++;
+      }
+      
+      this.skipWhitespace();
+      const value = this.parseValue();
+      obj[key] = value;
+      
+      this.skipWhitespace();
+      if (this.peek() === ';') {
+        this.pos++;
+      }
+    }
+    
+    if (this.peek() === '}') this.pos++;
+    return obj;
+  }
+
+  private parseArguments(): any {
+    this.skipWhitespace();
+    if (this.peek() === '{') {
+      return this.parseObject();
+    }
+    
+    const args: any[] = [];
+    while (this.pos < this.input.length && this.peek() !== ')') {
+      this.skipWhitespace();
+      if (this.peek() === ')') break;
+      
+      const value = this.parseValue();
+      args.push(value);
+      
+      this.skipWhitespace();
+      if (this.peek() === ',') {
+        this.pos++;
+      }
+    }
+    
+    return args.length === 1 ? args[0] : args;
+  }
+
+  private parseValue(): any {
+    this.skipWhitespace();
+    const ch = this.peek();
+    
+    // 文字列
+    if (ch === '"') {
+      return this.parseString();
+    }
+    
+    // 配列
+    if (ch === '[') {
+      return this.parseArray();
+    }
+    
+    // オブジェクト
+    if (ch === '{') {
+      return this.parseObject();
+    }
+    
+    // 数値
+    if (/[0-9\-]/.test(ch)) {
+      return this.parseNumber();
+    }
+    
+    // 真偽値
+    if (this.input.substr(this.pos, 4) === 'true') {
+      this.pos += 4;
+      return true;
+    }
+    if (this.input.substr(this.pos, 5) === 'false') {
+      this.pos += 5;
+      return false;
+    }
+    
+    // 識別子
+    return this.parseIdentifier();
+  }
+
+  private parseString(): string {
+    this.pos++; // skip "
+    const start = this.pos;
+    while (this.pos < this.input.length && this.input[this.pos] !== '"') {
+      this.pos++;
+    }
+    const str = this.input.substring(start, this.pos);
+    if (this.peek() === '"') this.pos++;
+    return str;
+  }
+
+  private parseArray(): any[] {
+    this.pos++; // skip [
+    this.skipWhitespace();
+    
+    const arr: any[] = [];
+    while (this.pos < this.input.length && this.peek() !== ']') {
+      this.skipWhitespace();
+      if (this.peek() === ']') break;
+      
+      const value = this.parseValue();
+      arr.push(value);
+      
+      this.skipWhitespace();
+      if (this.peek() === ',') {
+        this.pos++;
+      }
+    }
+    
+    if (this.peek() === ']') this.pos++;
+    return arr;
+  }
+
+  private parseNumber(): number {
+    const start = this.pos;
+    if (this.peek() === '-') this.pos++;
+    
+    while (this.pos < this.input.length && /[0-9.]/.test(this.input[this.pos])) {
+      this.pos++;
+    }
+    
+    return parseFloat(this.input.substring(start, this.pos));
+  }
+
+  private skipWhitespace(): void {
+    while (this.pos < this.input.length && /\s/.test(this.input[this.pos])) {
+      this.pos++;
+    }
+  }
+
+  private peek(): string {
+    return this.input[this.pos] || '';
+  }
+}
+
+// Algodooシーンデータ
+export interface AlgodooScene {
   version: string;
   objects: AlgodooObject[];
   planes: AlgodooPlane[];
-  water?: AlgodooWater[];
+  camera?: any;
+  sim?: any;
 }
 
-interface AlgodooObject {
-  type: 'circle' | 'rectangle' | 'polygon' | 'gear' | 'cloth' | 'chain' | 'plane' | 'text' | 'laser' | 'spring' | 'tracer';
+export interface AlgodooObject {
+  type: 'circle' | 'rectangle' | 'polygon';
   pos: [number, number];
   vel?: [number, number];
   angle?: number;
@@ -25,307 +265,183 @@ interface AlgodooObject {
   friction?: number;
   static?: boolean;
   name?: string;
+  geomID?: number;
+  entityID?: number;
+  body?: number;
 }
 
-interface AlgodooPlane {
+export interface AlgodooPlane {
   pos: [number, number];
   angle?: number;
   color?: [number, number, number, number];
 }
 
-interface AlgodooWater {
-  pos: [number, number];
-  size: [number, number];
-  color?: [number, number, number, number];
-}
+// 座標変換（Algodooはメートル、Matter.jsはピクセル）
+const UNIT_CONVERSION = 100; // 1m = 100px
 
-// XMLパーサーの設定
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: '',
-  allowBooleanAttributes: true,
-  parseAttributeValue: true,
-  trimValues: true,
-});
-
-const xmlBuilder = new XMLBuilder({
-  ignoreAttributes: false,
-  attributeNamePrefix: '',
-  format: true,
-  indentBy: '  ',
-  suppressEmptyNode: true,
-});
-
-// 文字列から配列へ変換（例: "1.0,2.0" -> [1.0, 2.0]）
-function parseVector(str: string | undefined, dimensions: number = 2): number[] | undefined {
-  if (!str) return undefined;
-  const parts = str.split(',').map(Number);
-  if (parts.length < dimensions) return undefined;
-  return parts.slice(0, dimensions);
-}
-
-// 配列から文字列へ変換（例: [1.0, 2.0] -> "1.0,2.0"）
-function vectorToString(vec: number[]): string {
-  return vec.join(',');
-}
-
-// 色をAlgodoo形式に変換（例: "#FF0000" -> "1,0,0,1"）
-function colorToAlgodoo(color: string): [number, number, number, number] {
-  if (color.startsWith('#')) {
-    const hex = color.slice(1);
-    const r = parseInt(hex.slice(0, 2), 16) / 255;
-    const g = parseInt(hex.slice(2, 4), 16) / 255;
-    const b = parseInt(hex.slice(4, 6), 16) / 255;
-    return [r, g, b, 1];
-  }
-  // 既にRGBA形式の場合
-  const parts = color.split(',').map(Number);
-  if (parts.length === 4) {
-    return parts as [number, number, number, number];
-  }
-  return [0.5, 0.5, 0.5, 1];
-}
-
-// Algodoo色をHEXに変換
-function algodooToHex(color: [number, number, number, number]): string {
-  const r = Math.round(color[0] * 255);
-  const g = Math.round(color[1] * 255);
-  const b = Math.round(color[2] * 255);
-  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-}
-
-// .phnファイル（XML）をパース
-export function parsePhn(xmlContent: string): AlgodooScene {
-  const parsed = xmlParser.parse(xmlContent);
+// .phnファイル（Thymeスクリプト）をパース
+export function parsePhn(content: string): AlgodooScene {
+  const parser = new ThymeParser(content);
+  const nodes = parser.parse();
   
   const scene: AlgodooScene = {
-    version: parsed.Scene?._attributes?.version || '2.1.0',
+    version: '2.1.0',
     objects: [],
     planes: [],
-    water: [],
   };
 
-  const sceneData = parsed.Scene || {};
-
-  // 平面（Plane）をパース
-  if (sceneData.Plane) {
-    const planes = Array.isArray(sceneData.Plane) ? sceneData.Plane : [sceneData.Plane];
-    planes.forEach((plane: any) => {
-      const pos = parseVector(plane.pos) as [number, number] || [0, 0];
-      const angle = plane.angle !== undefined ? Number(plane.angle) : undefined;
-      const color = parseVector(plane.color, 4) as [number, number, number, number] | undefined;
+  nodes.forEach(node => {
+    if (node.type === 'call') {
+      const name = node.name;
+      const args = node.arguments;
       
-      scene.planes.push({ pos, angle, color });
-    });
-  }
-
-  // 水（Water）をパース
-  if (sceneData.Water) {
-    const waters = Array.isArray(sceneData.Water) ? sceneData.Water : [sceneData.Water];
-    waters.forEach((water: any) => {
-      const pos = parseVector(water.pos) as [number, number] || [0, 0];
-      const size = parseVector(water.size) as [number, number] || [1, 1];
-      const color = parseVector(water.color, 4) as [number, number, number, number] | undefined;
-      
-      scene.water!.push({ pos, size, color });
-    });
-  }
-
-  // 円（Circle）をパース
-  if (sceneData.Circle) {
-    const circles = Array.isArray(sceneData.Circle) ? sceneData.Circle : [sceneData.Circle];
-    circles.forEach((circle: any) => {
-      const obj: AlgodooObject = {
-        type: 'circle',
-        pos: parseVector(circle.pos) as [number, number] || [0, 0],
-        radius: circle.radius !== undefined ? Number(circle.radius) : 0.5,
-      };
-      
-      if (circle.vel) obj.vel = parseVector(circle.vel) as [number, number];
-      if (circle.angle !== undefined) obj.angle = Number(circle.angle);
-      if (circle.angvel !== undefined) obj.angvel = Number(circle.angvel);
-      if (circle.color) obj.color = parseVector(circle.color, 4) as [number, number, number, number];
-      if (circle.density !== undefined) obj.density = Number(circle.density);
-      if (circle.restitution !== undefined) obj.restitution = Number(circle.restitution);
-      if (circle.friction !== undefined) obj.friction = Number(circle.friction);
-      if (circle.static !== undefined) obj.static = circle.static === true || circle.static === 'true';
-      if (circle.name) obj.name = circle.name;
-      
-      scene.objects.push(obj);
-    });
-  }
-
-  // 四角形（Rectangle）をパース
-  if (sceneData.Rectangle) {
-    const rectangles = Array.isArray(sceneData.Rectangle) ? sceneData.Rectangle : [sceneData.Rectangle];
-    rectangles.forEach((rect: any) => {
-      const obj: AlgodooObject = {
-        type: 'rectangle',
-        pos: parseVector(rect.pos) as [number, number] || [0, 0],
-        size: parseVector(rect.size) as [number, number] || [1, 1],
-      };
-      
-      if (rect.vel) obj.vel = parseVector(rect.vel) as [number, number];
-      if (rect.angle !== undefined) obj.angle = Number(rect.angle);
-      if (rect.angvel !== undefined) obj.angvel = Number(rect.angvel);
-      if (rect.color) obj.color = parseVector(rect.color, 4) as [number, number, number, number];
-      if (rect.density !== undefined) obj.density = Number(rect.density);
-      if (rect.restitution !== undefined) obj.restitution = Number(rect.restitution);
-      if (rect.friction !== undefined) obj.friction = Number(rect.friction);
-      if (rect.static !== undefined) obj.static = rect.static === true || rect.static === 'true';
-      if (rect.name) obj.name = rect.name;
-      
-      scene.objects.push(obj);
-    });
-  }
-
-  // 多角形（Polygon）をパース
-  if (sceneData.Polygon) {
-    const polygons = Array.isArray(sceneData.Polygon) ? sceneData.Polygon : [sceneData.Polygon];
-    polygons.forEach((poly: any) => {
-      const obj: AlgodooObject = {
-        type: 'polygon',
-        pos: parseVector(poly.pos) as [number, number] || [0, 0],
-        vertices: [],
-      };
-      
-      if (poly.vertices) {
-        const verts = poly.vertices.split(';').map((v: string) => {
-          const coords = v.split(',').map(Number);
-          return [coords[0], coords[1]] as [number, number];
+      if (name === 'Scene.addCircle') {
+        scene.objects.push({
+          type: 'circle',
+          pos: args.pos || [0, 0],
+          radius: args.radius || 0.5,
+          vel: args.vel,
+          angle: args.angle,
+          angvel: args.angvel,
+          color: args.color,
+          density: args.density,
+          restitution: args.restitution,
+          friction: args.friction,
+          static: args.glued,
+          geomID: args.geomID,
+          entityID: args.entityID,
+          body: args.body,
         });
-        obj.vertices = verts;
+      } else if (name === 'Scene.addBox') {
+        scene.objects.push({
+          type: 'rectangle',
+          pos: args.pos || [0, 0],
+          size: args.size || [1, 1],
+          vel: args.vel,
+          angle: args.angle,
+          angvel: args.angvel,
+          color: args.color,
+          density: args.density,
+          restitution: args.restitution,
+          friction: args.friction,
+          static: args.glued,
+          geomID: args.geomID,
+          entityID: args.entityID,
+          body: args.body,
+        });
+      } else if (name === 'Scene.addPolygon') {
+        scene.objects.push({
+          type: 'polygon',
+          pos: args.pos || [0, 0],
+          vertices: args.vertices,
+          vel: args.vel,
+          angle: args.angle,
+          angvel: args.angvel,
+          color: args.color,
+          density: args.density,
+          restitution: args.restitution,
+          friction: args.friction,
+          static: args.glued,
+          geomID: args.geomID,
+          entityID: args.entityID,
+          body: args.body,
+        });
+      } else if (name === 'Scene.addPlane') {
+        scene.planes.push({
+          pos: args.pos || [0, 0],
+          angle: args.angle,
+          color: args.color,
+        });
       }
-      
-      if (poly.vel) obj.vel = parseVector(poly.vel) as [number, number];
-      if (poly.angle !== undefined) obj.angle = Number(poly.angle);
-      if (poly.angvel !== undefined) obj.angvel = Number(poly.angvel);
-      if (poly.color) obj.color = parseVector(poly.color, 4) as [number, number, number, number];
-      if (poly.density !== undefined) obj.density = Number(poly.density);
-      if (poly.restitution !== undefined) obj.restitution = Number(poly.restitution);
-      if (poly.friction !== undefined) obj.friction = Number(poly.friction);
-      if (poly.static !== undefined) obj.static = poly.static === true || poly.static === 'true';
-      if (poly.name) obj.name = poly.name;
-      
-      scene.objects.push(obj);
-    });
-  }
+    } else if (node.type === 'struct') {
+      if (node.name === 'Scene.Camera') {
+        scene.camera = node.properties;
+      } else if (node.name === 'Sim') {
+        scene.sim = node.properties;
+      }
+    }
+  });
 
   return scene;
 }
 
-// AlgodooSceneを.phn（XML）に変換
+// AlgodooSceneを.phn（Thymeスクリプト）に変換
 export function buildPhn(scene: AlgodooScene): string {
-  const xmlDoc: any = {
-    '?xml': {
-      '@_version': '1.0',
-      '@_encoding': 'UTF-8',
-    },
-    Scene: {
-      '@_version': scene.version,
-    },
-  };
-
-  // 平面を追加
-  if (scene.planes.length > 0) {
-    xmlDoc.Scene.Plane = scene.planes.map(plane => {
-      const attrs: any = {
-        '@_pos': vectorToString(plane.pos),
-      };
-      if (plane.angle !== undefined) attrs['@_angle'] = plane.angle;
-      if (plane.color) attrs['@_color'] = vectorToString(plane.color);
-      return attrs;
-    });
+  const lines: string[] = [];
+  
+  // カメラ設定
+  if (scene.camera) {
+    lines.push(`Scene.Camera -> {`);
+    lines.push(`  pan := [${scene.camera.pan?.join(', ') || '0, 0'}];`);
+    lines.push(`  zoom := ${scene.camera.zoom || 1};`);
+    lines.push(`};`);
   }
-
-  // 水を追加
-  if (scene.water && scene.water.length > 0) {
-    xmlDoc.Scene.Water = scene.water.map(water => {
-      const attrs: any = {
-        '@_pos': vectorToString(water.pos),
-        '@_size': vectorToString(water.size),
-      };
-      if (water.color) attrs['@_color'] = vectorToString(water.color);
-      return attrs;
-    });
+  
+  // シミュレーション設定
+  if (scene.sim) {
+    lines.push(`Sim -> {`);
+    lines.push(`  gravitySwitch := ${scene.sim.gravitySwitch !== false};`);
+    lines.push(`  gravityStrength := ${scene.sim.gravityStrength || 10};`);
+    lines.push(`};`);
   }
-
-  // オブジェクトを追加
-  const circles = scene.objects.filter(o => o.type === 'circle');
-  const rectangles = scene.objects.filter(o => o.type === 'rectangle');
-  const polygons = scene.objects.filter(o => o.type === 'polygon');
-
-  if (circles.length > 0) {
-    xmlDoc.Scene.Circle = circles.map(circle => {
-      const attrs: any = {
-        '@_pos': vectorToString(circle.pos),
-        '@_radius': circle.radius,
-      };
-      if (circle.vel) attrs['@_vel'] = vectorToString(circle.vel);
-      if (circle.angle !== undefined) attrs['@_angle'] = circle.angle;
-      if (circle.angvel !== undefined) attrs['@_angvel'] = circle.angvel;
-      if (circle.color) attrs['@_color'] = vectorToString(circle.color);
-      if (circle.density !== undefined) attrs['@_density'] = circle.density;
-      if (circle.restitution !== undefined) attrs['@_restitution'] = circle.restitution;
-      if (circle.friction !== undefined) attrs['@_friction'] = circle.friction;
-      if (circle.static) attrs['@_static'] = true;
-      if (circle.name) attrs['@_name'] = circle.name;
-      return attrs;
-    });
-  }
-
-  if (rectangles.length > 0) {
-    xmlDoc.Scene.Rectangle = rectangles.map(rect => {
-      const attrs: any = {
-        '@_pos': vectorToString(rect.pos),
-        '@_size': vectorToString(rect.size!),
-      };
-      if (rect.vel) attrs['@_vel'] = vectorToString(rect.vel);
-      if (rect.angle !== undefined) attrs['@_angle'] = rect.angle;
-      if (rect.angvel !== undefined) attrs['@_angvel'] = rect.angvel;
-      if (rect.color) attrs['@_color'] = vectorToString(rect.color);
-      if (rect.density !== undefined) attrs['@_density'] = rect.density;
-      if (rect.restitution !== undefined) attrs['@_restitution'] = rect.restitution;
-      if (rect.friction !== undefined) attrs['@_friction'] = rect.friction;
-      if (rect.static) attrs['@_static'] = true;
-      if (rect.name) attrs['@_name'] = rect.name;
-      return attrs;
-    });
-  }
-
-  if (polygons.length > 0) {
-    xmlDoc.Scene.Polygon = polygons.map(poly => {
-      const attrs: any = {
-        '@_pos': vectorToString(poly.pos),
-      };
-      if (poly.vertices) {
-        attrs['@_vertices'] = poly.vertices.map(v => vectorToString(v)).join(';');
-      }
-      if (poly.vel) attrs['@_vel'] = vectorToString(poly.vel);
-      if (poly.angle !== undefined) attrs['@_angle'] = poly.angle;
-      if (poly.angvel !== undefined) attrs['@_angvel'] = poly.angvel;
-      if (poly.color) attrs['@_color'] = vectorToString(poly.color);
-      if (poly.density !== undefined) attrs['@_density'] = poly.density;
-      if (poly.restitution !== undefined) attrs['@_restitution'] = poly.restitution;
-      if (poly.friction !== undefined) attrs['@_friction'] = poly.friction;
-      if (poly.static) attrs['@_static'] = true;
-      if (poly.name) attrs['@_name'] = poly.name;
-      return attrs;
-    });
-  }
-
-  return xmlBuilder.build(xmlDoc);
+  
+  // 平面
+  scene.planes.forEach((plane, i) => {
+    lines.push(`Scene.addPlane({`);
+    lines.push(`  pos := [${plane.pos.join(', ')}];`);
+    if (plane.angle !== undefined) lines.push(`  angle := ${plane.angle};`);
+    if (plane.color) lines.push(`  color := [${plane.color.join(', ')}];`);
+    lines.push(`  geomID := ${i};`);
+    lines.push(`});`);
+  });
+  
+  // オブジェクト
+  scene.objects.forEach((obj, i) => {
+    if (obj.type === 'circle') {
+      lines.push(`Scene.addCircle({`);
+      lines.push(`  pos := [${obj.pos.join(', ')}];`);
+      lines.push(`  radius := ${obj.radius || 0.5};`);
+      if (obj.vel) lines.push(`  vel := [${obj.vel.join(', ')}];`);
+      if (obj.angle !== undefined) lines.push(`  angle := ${obj.angle};`);
+      if (obj.angvel !== undefined) lines.push(`  angvel := ${obj.angvel};`);
+      if (obj.color) lines.push(`  color := [${obj.color.join(', ')}];`);
+      if (obj.density !== undefined) lines.push(`  density := ${obj.density};`);
+      if (obj.restitution !== undefined) lines.push(`  restitution := ${obj.restitution};`);
+      if (obj.friction !== undefined) lines.push(`  friction := ${obj.friction};`);
+      if (obj.static) lines.push(`  glued := true;`);
+      lines.push(`  geomID := ${100 + i};`);
+      lines.push(`  entityID := ${100 + i};`);
+      lines.push(`});`);
+    } else if (obj.type === 'rectangle') {
+      lines.push(`Scene.addBox({`);
+      lines.push(`  pos := [${obj.pos.join(', ')}];`);
+      lines.push(`  size := [${(obj.size || [1, 1]).join(', ')}];`);
+      if (obj.vel) lines.push(`  vel := [${obj.vel.join(', ')}];`);
+      if (obj.angle !== undefined) lines.push(`  angle := ${obj.angle};`);
+      if (obj.angvel !== undefined) lines.push(`  angvel := ${obj.angvel};`);
+      if (obj.color) lines.push(`  color := [${obj.color.join(', ')}];`);
+      if (obj.density !== undefined) lines.push(`  density := ${obj.density};`);
+      if (obj.restitution !== undefined) lines.push(`  restitution := ${obj.restitution};`);
+      if (obj.friction !== undefined) lines.push(`  friction := ${obj.friction};`);
+      if (obj.static) lines.push(`  glued := true;`);
+      lines.push(`  geomID := ${100 + i};`);
+      lines.push(`  entityID := ${100 + i};`);
+      lines.push(`});`);
+    }
+  });
+  
+  return lines.join('\n');
 }
 
 // PhysicsBodyをAlgodooObjectに変換
 export function physicsBodyToAlgodoo(body: PhysicsBody): AlgodooObject {
   const obj: AlgodooObject = {
     type: body.type === 'circle' ? 'circle' : body.type === 'rectangle' ? 'rectangle' : 'polygon',
-    pos: [body.x / 100, body.y / 100], // ピクセルからメートルへ変換
-    vel: [body.vx / 100, body.vy / 100],
+    pos: [body.x / UNIT_CONVERSION, body.y / UNIT_CONVERSION],
+    vel: [body.vx / UNIT_CONVERSION, body.vy / UNIT_CONVERSION],
     angle: body.angle,
     angvel: body.angularVelocity,
-    color: colorToAlgodoo(body.color),
+    color: hexToAlgodooColor(body.color),
     density: body.density,
     restitution: body.restitution,
     friction: body.friction,
@@ -333,9 +449,9 @@ export function physicsBodyToAlgodoo(body: PhysicsBody): AlgodooObject {
   };
 
   if (body.type === 'circle' && body.radius) {
-    obj.radius = body.radius / 100;
+    obj.radius = body.radius / UNIT_CONVERSION;
   } else if (body.type === 'rectangle' && body.width && body.height) {
-    obj.size = [body.width / 100, body.height / 100];
+    obj.size = [body.width / UNIT_CONVERSION, body.height / UNIT_CONVERSION];
   }
 
   return obj;
@@ -345,29 +461,47 @@ export function physicsBodyToAlgodoo(body: PhysicsBody): AlgodooObject {
 export function algodooToPhysicsBody(obj: AlgodooObject, id: string): PhysicsBody {
   const body: PhysicsBody = {
     id,
-    type: obj.type === 'circle' ? 'circle' : obj.type === 'rectangle' ? 'rectangle' : 'polygon',
-    x: obj.pos[0] * 100, // メートルからピクセルへ変換
-    y: obj.pos[1] * 100,
+    type: obj.type,
+    x: obj.pos[0] * UNIT_CONVERSION,
+    y: obj.pos[1] * UNIT_CONVERSION,
     angle: obj.angle || 0,
-    vx: obj.vel ? obj.vel[0] * 100 : 0,
-    vy: obj.vel ? obj.vel[1] * 100 : 0,
+    vx: obj.vel ? obj.vel[0] * UNIT_CONVERSION : 0,
+    vy: obj.vel ? obj.vel[1] * UNIT_CONVERSION : 0,
     angularVelocity: obj.angvel || 0,
-    color: obj.color ? algodooToHex(obj.color) : '#808080',
+    color: algodooColorToHex(obj.color || [0.5, 0.5, 0.5, 1]),
     ownerId: '',
     isStatic: obj.static || false,
     restitution: obj.restitution !== undefined ? obj.restitution : 0.5,
-    friction: obj.friction !== undefined ? obj.friction : 0.1,
-    density: obj.density !== undefined ? obj.density : 0.001,
+    friction: obj.friction !== undefined ? obj.friction : 0.5,
+    density: obj.density !== undefined ? obj.density : 1,
   };
 
   if (obj.type === 'circle' && obj.radius) {
-    body.radius = obj.radius * 100;
+    body.radius = obj.radius * UNIT_CONVERSION;
   } else if (obj.type === 'rectangle' && obj.size) {
-    body.width = obj.size[0] * 100;
-    body.height = obj.size[1] * 100;
+    body.width = obj.size[0] * UNIT_CONVERSION;
+    body.height = obj.size[1] * UNIT_CONVERSION;
   }
 
   return body;
+}
+
+// 色変換ユーティリティ
+function hexToAlgodooColor(hex: string): [number, number, number, number] {
+  if (hex.startsWith('#')) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return [r, g, b, 1];
+  }
+  return [0.5, 0.5, 0.5, 1];
+}
+
+function algodooColorToHex(color: [number, number, number, number]): string {
+  const r = Math.round(color[0] * 255).toString(16).padStart(2, '0');
+  const g = Math.round(color[1] * 255).toString(16).padStart(2, '0');
+  const b = Math.round(color[2] * 255).toString(16).padStart(2, '0');
+  return `#${r}${g}${b}`;
 }
 
 // .phzファイルを読み込み（ZIP展開して.phnを取得）
@@ -398,12 +532,11 @@ export async function savePhz(scene: AlgodooScene, filename: string = 'scene.phz
   const zip = new JSZip();
   zip.file('scene.phn', phnContent);
   
-  // サムネイル画像（空のPNG）を追加
-  // 実際にはキャンバスから生成するが、ここではプレースホルダー
-  const thumbnail = createEmptyThumbnail();
+  // サムネイル画像（空のPNG）
+  const thumbnail = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
   zip.file('thumbnail.png', thumbnail, { base64: true });
   
-  // チェックサムファイル
+  // チェックサム
   const checksum = generateChecksum(phnContent);
   zip.file('checksums.txt', checksum);
   
@@ -414,17 +547,10 @@ export async function savePhz(scene: AlgodooScene, filename: string = 'scene.phz
 // AlgodooSceneを.phnファイルとして保存
 export async function savePhn(scene: AlgodooScene, filename: string = 'scene.phn'): Promise<void> {
   const phnContent = buildPhn(scene);
-  const blob = new Blob([phnContent], { type: 'application/xml' });
+  const blob = new Blob([phnContent], { type: 'text/plain' });
   downloadBlob(blob, filename);
 }
 
-// 空のサムネイル画像（1x1の透明PNG）
-function createEmptyThumbnail(): string {
-  // 最小限のPNGデータ（1x1透明ピクセル）
-  return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-}
-
-// チェックサム生成（簡易版）
 function generateChecksum(content: string): string {
   let hash = 0;
   for (let i = 0; i < content.length; i++) {
@@ -435,7 +561,6 @@ function generateChecksum(content: string): string {
   return `scene.phn: ${Math.abs(hash).toString(16)}`;
 }
 
-// Blobをダウンロード
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -454,7 +579,7 @@ export function physicsBodiesToScene(bodies: PhysicsBody[]): AlgodooScene {
     objects: bodies.map(physicsBodyToAlgodoo),
     planes: [
       {
-        pos: [0, 5], // 画面下端
+        pos: [0, 5],
         angle: 0,
         color: [0.1, 0.1, 0.2, 1],
       },
