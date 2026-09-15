@@ -2,6 +2,14 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { usePeer } from './hooks/usePeer';
 import { usePhysics } from './hooks/usePhysics';
 import { SyncMessage, PhysicsBody, ChatMessage, Player, ToolType } from './types';
+import { 
+  loadPhz, 
+  loadPhn, 
+  savePhz, 
+  savePhn, 
+  physicsBodiesToScene, 
+  sceneToPhysicsBodies 
+} from './utils/algodooFile';
 
 function App() {
   const [screen, setScreen] = useState<'lobby' | 'game'>('lobby');
@@ -13,8 +21,10 @@ function App() {
   const [showPlayers, setShowPlayers] = useState(true);
   const [copied, setCopied] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const physics = usePhysics(canvasRef);
   
   const handleMessage = useCallback((msg: SyncMessage, _fromId: string) => {
@@ -202,6 +212,113 @@ function App() {
       text: `シーンを同期しました（${bodies.length}個のオブジェクト）`,
       timestamp: Date.now(),
     }]);
+  };
+
+  // ファイル読み込み（.phz/.phn）
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      let scene;
+      const extension = file.name.toLowerCase().split('.').pop();
+      
+      if (extension === 'phz') {
+        scene = await loadPhz(file);
+      } else if (extension === 'phn') {
+        scene = await loadPhn(file);
+      } else {
+        throw new Error('サポートされていないファイル形式です。.phzまたは.phnファイルを選択してください。');
+      }
+
+      // シーンをPhysicsBodyに変換して追加
+      physics.clearAll();
+      const bodies = sceneToPhysicsBodies(scene);
+      bodies.forEach(body => physics.addBody(body));
+
+      // P2Pで同期
+      if (peer.isConnected) {
+        const msg: SyncMessage = {
+          type: 'scene_sync',
+          payload: { bodies },
+          senderId: peer.localPlayerId,
+          timestamp: Date.now(),
+        };
+        peer.broadcastToAll(msg);
+      }
+
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `ファイルを読み込みました: ${file.name}（${bodies.length}個のオブジェクト）`,
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      console.error('ファイル読み込みエラー:', error);
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `エラー: ${error instanceof Error ? error.message : 'ファイルの読み込みに失敗しました'}`,
+        timestamp: Date.now(),
+      }]);
+    }
+
+    // ファイル入力をリセット
+    event.target.value = '';
+  };
+
+  // ファイル保存（.phz）
+  const handleExportPhz = async () => {
+    try {
+      const bodies = physics.getAllBodies();
+      const scene = physicsBodiesToScene(bodies);
+      await savePhz(scene, `scene_${Date.now()}.phz`);
+
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `.phzファイルを保存しました（${bodies.length}個のオブジェクト）`,
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      console.error('ファイル保存エラー:', error);
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `エラー: ファイルの保存に失敗しました`,
+        timestamp: Date.now(),
+      }]);
+    }
+  };
+
+  // ファイル保存（.phn）
+  const handleExportPhn = async () => {
+    try {
+      const bodies = physics.getAllBodies();
+      const scene = physicsBodiesToScene(bodies);
+      await savePhn(scene, `scene_${Date.now()}.phn`);
+
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `.phnファイルを保存しました（${bodies.length}個のオブジェクト）`,
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      console.error('ファイル保存エラー:', error);
+      setChatMessages(prev => [...prev, {
+        id: Date.now().toString() + Math.random(),
+        senderId: 'system',
+        senderName: 'システム',
+        text: `エラー: ファイルの保存に失敗しました`,
+        timestamp: Date.now(),
+      }]);
+    }
   };
 
   // ロビー画面
@@ -412,6 +529,54 @@ function App() {
             label="シーン同期"
             active={false}
             onClick={handleSendScene}
+          />
+          
+          <div className="border-t border-slate-600/50 w-8 my-1"></div>
+          
+          <ToolButton
+            icon="📂"
+            label="ファイル読込"
+            active={false}
+            onClick={() => fileInputRef.current?.click()}
+          />
+          <div className="relative">
+            <ToolButton
+              icon="💾"
+              label="ファイル保存"
+              active={false}
+              onClick={() => setShowExportMenu(!showExportMenu)}
+            />
+            {showExportMenu && (
+              <div className="absolute left-12 top-0 bg-slate-700 rounded-lg shadow-xl border border-slate-600 py-1 z-50 min-w-[120px]">
+                <button
+                  onClick={() => {
+                    handleExportPhz();
+                    setShowExportMenu(false);
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-xs text-white hover:bg-slate-600 transition-colors"
+                >
+                  .phz で保存
+                </button>
+                <button
+                  onClick={() => {
+                    handleExportPhn();
+                    setShowExportMenu(false);
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-xs text-white hover:bg-slate-600 transition-colors"
+                >
+                  .phn で保存
+                </button>
+              </div>
+            )}
+          </div>
+          
+          {/* 隠しファイル入力 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".phz,.phn"
+            onChange={handleImportFile}
+            className="hidden"
           />
         </div>
 
